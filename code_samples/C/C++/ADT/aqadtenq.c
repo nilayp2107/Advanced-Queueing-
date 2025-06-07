@@ -1,3 +1,14 @@
+/* 
+aqadtenq.c 
+Description - Enqueue ADT message to the Classic Queue
+
+To run this .c file 
+Step 1. Compile it $ loutl aqadtenq.c 
+Step 2. $ make libclntsh.so --To link all the binaries
+Step 3 Run it with specifying the username and password of the database user
+        $ ./aqadtenq <user> <password>
+*/
+
 #if defined(WIN32COMMON) || defined(WIN32) || defined(_WIN32) 
 #include <windows.h>
 #endif
@@ -118,6 +129,23 @@ void clean_up(OCIEnv *envhp,
     checkerr(NULL, OCIHandleFree((void *) envhp, (ub4) OCI_HTYPE_ENV));
 }
 
+/* Struct for person */
+struct person
+{
+    OCINumber    id;
+    OCIString    *name;
+};
+typedef struct person person;
+
+/* Struct for person message Indicator*/
+struct null_person
+{
+    OCIInd    null_adt;
+    OCIInd    null_id;
+    OCIInd    null_name;
+};
+typedef struct null_person null_person;
+
 int main(int argc, char *argv[])
 {
   OCIEnv             *envhp = (OCIEnv *)NULL;                     /* Environment Handle */
@@ -125,14 +153,13 @@ int main(int argc, char *argv[])
   OCIError           *errhp = (OCIError *)NULL;                   /* Error Handle */
   OCISvcCtx          *svchp = (OCISvcCtx *)NULL;                  /* Service Context Handle */
   OCISession         *usrhp = (OCISession *)NULL;                 /* Session Handle */
-  OCIType            *mesg_tdo = (OCIType *) NULL;                /* Message Type Handle */
+  OCIType         *mesg_tdo = (OCIType *) NULL;                   /* Message Type Handle */
   OCIAQMsgProperties *msgprop  = (OCIAQMsgProperties *)NULL;      /* Message Properties Descriptor */
-  OCIJson            *mesgp = NULL;                               /* JSON message */
-  OCIInd             *nmesgp;                                     /* Indicator to message */
-  OCIRaw             *msgid;                                      /* Message ID returned*/
-  oratext        vtext[UB1MAXVAL]; // 256 
-  ub4         vtextl; 
-  sword               status = 0;
+  person               msg;                                       /* ADT Payload */
+  null_person         nmsg;                                       /* ADT Payload Indicator */
+  person              *mesg = &msg;                               /* ADT Payload Pointer */
+  null_person        *nmesg = &nmsg;                              /* ADT Payload Indicator Pointer*/
+  sword               status = 0;                                 /* Error status*/
   char usrnm[256];                                                /* Username of size 256 */
   char *pass;                                                     /* password string pointer */ 
   /* Copy the argument passed to the username*/
@@ -191,10 +218,10 @@ int main(int argc, char *argv[])
   OCIAttrSet( (dvoid *)svchp, (ub4)OCI_HTYPE_SVCCTX,
               (dvoid *)usrhp, (ub4)0, OCI_ATTR_SESSION, errhp);
 
-  /* Get the JSON Message Type*/
+  /* Get the ADT Message Type*/
   checkerr(errhp, OCITypeByName(envhp, errhp, svchp,
-          (CONST text *)"SYS", (ub4)strlen("SYS"),
-          (CONST text *)"JSON", (ub4)strlen("JSON"), (text *)0, 0,
+          (CONST text *)"TEQUSER", (ub4)strlen("TEQUSER"),
+          (CONST text *)"PERSON", (ub4)strlen("PERSON"), (text *)0, 0,
           OCI_DURATION_SESSION, OCI_TYPEGET_ALL, &mesg_tdo));
 
   /* allocate message properties descriptor */
@@ -204,32 +231,29 @@ int main(int argc, char *argv[])
   /* Construct the queue name as <SCHEMA.QUEUE_NAME> */
     char queuename[100];
   strcpy(queuename , usrnm); 
-  strcat(queuename, ".json_queue");
+  strcat(queuename, ".adt_queue");
 
-  /* Creating Json Message and storing it in a text buffer */
-  oratext bufp[4000]; // oratext is unsigned char
-  oraub8  buf_sz;  // unsigned long
-  strcpy(bufp, 
-    "{\"strkey\": \"strval\", \"numkey\": 30,\"numcol\": [1,2,3,4]}");   
-  buf_sz = strlen(bufp); 
+  /* Initialize person.id */
+  int i = 1001;
+  /* Initialize person.name */
+  mesg->name = (OCIString *)0;
+  checkerr(errhp, OCINumberFromInt(errhp, &i, sizeof(i), 0, &mesg->id));
+  checkerr(errhp, OCIStringAssignText(envhp, errhp,
+    (CONST text *)"PATEL", (ub4)strlen("PATEL"),
+    &mesg->name));
+  /* Popoulate the Indicator with 0 (NOT NULL)*/
+  nmesg->null_adt = nmesg->null_id = 0;
+  nmesg->null_name = 0;
 
-  /* Allocate the JSON descriptor */
-  mesgp = 0;
-  nmesgp = (OCIInd*) malloc(sizeof(OCIInd));
-  memset(nmesgp, 0, sizeof(OCIInd));
-  checkerr(errhp,OCIDescriptorAlloc(envhp, (void **) &mesgp, OCI_DTYPE_JSON, 0, 0));
+  /* Enqueue the message */
+  checkerr(errhp, OCIAQEnq(svchp, errhp, (text *) queuename, 
+        (OCIAQEnqOptions *)0, (OCIAQMsgProperties *)msgprop,
+        mesg_tdo, (dvoid **)&mesg, (dvoid **)&nmesg, (OCIRaw **)0, 0));
 
-  /* Pass the message to JSON Descriptor */
-  OCIJsonTextBufferParse(svchp, mesgp, bufp, buf_sz, JZN_ALLOW_ALL, JZN_INPUT_UTF8,errhp, OCI_DEFAULT);
-  /* Enqueue the JSON message */
-  checkerr(errhp,OCIAQEnq(svchp, errhp,
-        (text *) queuename, NULL,
-        (OCIAQMsgProperties *)msgprop,   
-        mesg_tdo, (void **)&mesgp, (void **)&nmesgp, (OCIRaw **)0, OCI_DEFAULT));
+  /* Commit to see the enqueue message in the queue */
+  checkerr(errhp, OCITransCommit(svchp, errhp, (ub4) 0));
   printf("Enqueue Done.\n");
   /* Clean up the handles*/
   clean_up(envhp, svchp, srvhp, errhp, usrhp, msgprop);
-  free(nmesgp);
-
   exit (0);
 }
